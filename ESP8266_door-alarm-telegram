@@ -1,0 +1,197 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+#include <WiFiManager.h>
+
+//khai báo wifimanager
+WiFiManager wm; //khai báo ở đây là biến global
+
+const int led=D4; //led on board sáng mức LOW
+bool ledstate=LOW;
+const int door=D5; //D5 GPIO14 door sensor
+bool doorstate; //1 open, 0 close
+bool dooren=0; 
+bool wifiok=1; //0 OK, 1 mất wifi
+bool alarmen=0; //0 không cảnh báo, 1 cảnh báo
+const int resetpin=D7; //dùng reset cứng
+//Telegram - Khai báo
+#define BOTtoken "5216091189:AAE3jFEhsEcl53YFVJ3WSdoIg9x9zsLzMEE"
+#define CHAT_ID "-1001761143696"
+X509List cert(TELEGRAM_CERTIFICATE_ROOT);
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOTtoken, client);
+int botRequestDelay = 1000; //000ms
+unsigned long lastTimeBotRan;
+
+
+//Telegram - hàm nhận tin nhắn từ telegram
+void handleNewMessages(int numNewMessages)
+{
+  Serial.print("handleNewMessages ");
+  Serial.println(numNewMessages);
+  for (int i = 0; i < numNewMessages; i++)
+  {
+    String chat_id = bot.messages[i].chat_id;
+    String text = bot.messages[i].text;
+    String from_name = bot.messages[i].from_name;
+    if (from_name == "") from_name = "Guest";
+    if (chat_id != CHAT_ID){
+      bot.sendMessage(chat_id, "Unauthorized user", "");
+      continue; }
+
+    if (text == "/start")
+    {
+      String welcome = "Welcome welcome.... " + from_name + "!\n\n";
+      welcome += "/status >> Xem cửa đang đóng hay đang mở.\n";
+      welcome += "/alarm >> Cảnh báo liên tục đến khi off.\n";
+      welcome += "/off >> Tắt cảnh báo.\n";
+      welcome += "/help >> Hướng dẫn sử dụng.\n";
+      welcome += "/dev >> dev.\n";
+      bot.sendMessage(chat_id, welcome, "Markdown");
+    }
+    if (text == "/alarm")
+    {
+      alarmen=1;
+      String welcomea = "Cảnh báo: ON!\n";
+      if (digitalRead(door)) welcomea += "Cửa đang mở.";
+      else welcomea += "Cửa đang đóng.";
+      bot.sendMessage(chat_id, welcomea, "");
+    }
+     if (text == "/off")
+    {
+      alarmen=0;
+      bot.sendMessage(chat_id, "Cảnh báo: OFF!", "");
+    }
+     if (text == "/status")
+     {
+      String welcomes = "Hiện tại bây giờ......\n";
+      if(digitalRead(door)) welcomes +="Cửa đang MỞ!\n";
+      else welcomes += "Cửa đang ĐÓNG!\n";
+      if(alarmen) welcomes +="Cảnh báo: ON!\n";
+      else welcomes += "Cảnh báo: OFF!\n";
+      bot.sendMessage(chat_id,welcomes,"");
+     }
+    if (text == "/help")
+    {
+      String welcomeh = "Đèn trên mạch sáng xanh > Hệ thống vừa khởi động, chưa kết nối wifi.\n";
+      welcomeh += "Đèn tắt > Hệ thống hoạt động bình thường, kết nối wifi OK.\n";
+      welcomeh += "Đèn chớp tắt > Mất kết nối wifi.\n";
+      bot.sendMessage(chat_id, welcomeh, "Markdown");
+    }
+    if (text == "/dev")
+    {
+      String welcomed = "Kết nối cảm biến cửa: D5&GND.\n";
+      welcomed += "Reset cứng: nối D7-GND, chờ 3s đến khi đèn sáng.\n";
+      bot.sendMessage(chat_id, welcomed, "Markdown");
+    }
+    
+  }
+}
+//ket thuc ham nhan tin nhan telegram
+
+// Runs whenever the reedswitch changes state
+ICACHE_RAM_ATTR void changeDoorStatus() {
+  dooren = 1;
+}
+
+void setup() {
+Serial.begin(115200);
+pinMode(led,OUTPUT);
+digitalWrite(led,LOW);//ESP khởi động mở đèn on board
+  pinMode(door, INPUT_PULLUP); //door sensor pull up
+  doorstate=digitalRead(door);
+  attachInterrupt(digitalPinToInterrupt(door), changeDoorStatus, CHANGE); //interrup door state
+    pinMode(resetpin, INPUT_PULLUP);
+   
+ 
+ client.setTrustAnchors(&cert); 
+//wifimanager
+WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
+
+    wm.setConfigPortalTimeout (120); // auto close configportal after n seconds
+    bool res;    
+    res = wm.autoConnect("ESP-wifi","09876543"); // autoconect sẽ tắt khi connect Ok.
+    if(!res) {
+        Serial.println("Failed to connect");
+        wifiok=1; //không kết nối wifi
+    } 
+    else {
+          Serial.println("connected...yeey :)");
+        digitalWrite(led,HIGH);//wifi connect tắt led on board
+        wifiok=0;
+    }
+//wifimanager OK
+// Check NTP/Time, thiếu telegram sẽ không hoạt động
+ Serial.print("Retrieving time: ");
+  configTime(25200, 0, "pool.ntp.org"); // get UTC time via NTP UTC+7=7*3600=25200
+  time_t now = time(nullptr);
+  while (now < 24 * 3600)
+  { Serial.print(".");
+    delay(100);
+    now = time(nullptr);
+  }
+  Serial.println(now);
+//telegram
+String welwel="DOOR ALARM vừa khởi động!\n /start để bắt đầu.\n\n";
+if(doorstate) welwel +="Cửa đang mở.\n";
+else welwel +="Cửa đang đóng.\n";
+ bot.sendMessage(CHAT_ID, welwel , "");
+ Serial.println("Telgram OK"); 
+//telegram OK
+}
+void loop() {
+//Trong tgian chờ sẽ ktra telegram, wifi và door state
+if (millis() > lastTimeBotRan + botRequestDelay)  {
+  //Telegram - kiểm tra có tin nhắn?
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    while(numNewMessages) {
+      Serial.println("got response");
+      handleNewMessages(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    } //telegram  OK
+//Kiểm tra wifi nếu mất kết nối
+if (WiFi.status() != WL_CONNECTED)
+  { Serial.print(".");
+    ledstate=!ledstate;
+    digitalWrite(led,ledstate); //led chớp tắt liên tực
+    wifiok=1;
+  }
+  else {
+    digitalWrite(led,HIGH); //wifi kết nối OK tắt led
+  }
+  if(wifiok==1 && (WiFi.status() == WL_CONNECTED))
+  {
+    wifiok=0;
+    bot.sendMessage(CHAT_ID,"Mất kết nối wifi....Wifi vừa kết nối lại.","");
+  }
+  //ket thuc kiem tra wifi
+ //Kiểm tra trạng thái cửa
+ if(dooren){ 
+  String doorw;
+  if(alarmen == 0){ dooren =0; doorw ="Cửa bị tác động ";}
+  else doorw ="CẢNH BÁO! ";
+  doorstate = digitalRead(door);
+   if(doorstate) doorw +=" >> cửa mở!\n";
+   else doorw += " >> cửa đóng!\n";
+  bot.sendMessage(CHAT_ID,doorw,"");
+  }
+  
+ //ket thuc kiem tra door state
+    lastTimeBotRan = millis();
+  }
+//kiểm tra reset cứng
+if(digitalRead(resetpin)==LOW)
+{ delay(50);
+  if(digitalRead(resetpin)==LOW) 
+  { Serial.println("reset cứng");
+    delay(2000); //delay 2000ms
+    if(digitalRead(resetpin)==LOW)
+    { Serial.println("Xóa cấu hình, restart");
+      bot.sendMessage(CHAT_ID,"Hệ thống reset! Restart!","");
+      wm.resetSettings();
+      ESP.restart();       
+    }
+  }
+}// kết thúc reset cứng
+} //loop
