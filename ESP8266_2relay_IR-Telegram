@@ -1,0 +1,242 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+#include <WiFiManager.h>
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRutils.h>
+
+
+//Telegram - Khai báo
+#define BOTtoken "5016649880:AAF9AD1FBEz9vN2nI0rPYq5tvJR6jCsRr1I"
+#define CHAT_ID "-746367817"
+X509List cert(TELEGRAM_CERTIFICATE_ROOT);
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOTtoken, client);
+int botRequestDelay = 1000;
+unsigned long lastTimeBotRan;
+
+const int buzz = 2; //D4-GPIO2
+const int chuong = 4; //D2-GPIO4
+const int den = 0; //D3-GPIO0
+bool denstate = HIGH; //HIGH đèn tắt.
+bool alarmEn = 1; //cho phép chuông báo.
+int alarmDelay = 300000; //5 phút = 5*60*1000ms
+unsigned long alarmTime;
+
+//cam bien cua
+//const int door = 5; //D1-GPIO5
+
+bool door1last;
+bool door2last;
+int doorDelay = 200;
+unsigned long doorTime;
+const int door1 = 12; //D6-GPIO12
+const int door2 = 13; //D7-GPIO13
+
+//IR remote
+const int irreceive = 14; //D5-GPIO14
+IRrecv irrecv(irreceive);
+decode_results results;
+
+//Telegram - hàm nhận tin nhắn từ telegram
+void handleNewMessages(int numNewMessages) {
+  Serial.println("handleNewMessages");
+  Serial.println(String(numNewMessages));
+
+  for (int i=0; i<numNewMessages; i++) {
+    // Chat id of the requester
+    String chat_id = String(bot.messages[i].chat_id);
+    if (chat_id != CHAT_ID){
+      bot.sendMessage(chat_id, "Unauthorized user", "");
+      continue;
+    }
+    String text = bot.messages[i].text;
+    Serial.println(text);
+    String from_name = bot.messages[i].from_name;
+    if (text == "/start") {
+      String welcome = "Welcome, " + from_name + ".\n";
+      welcome += "Sử dụng các lệnh dưới:\n";
+      welcome += "/onden Mở đèn. \n";
+      welcome += "/offden Tắt đèn. \n";
+      welcome += "/onchuong Mở chuông báo. \n";
+      welcome += "/stopchuong Tắt chuông báo trong 5 phút. \n";
+      welcome += "/state Trạng thái hiện tại. \n";
+      bot.sendMessage(chat_id, welcome, "");
+    }
+
+    if (text == "/onden") {
+      bot.sendMessage(chat_id, "Mở đèn.", "");
+      digitalWrite(den, LOW); //ON relay1
+      }
+     if (text == "/offden") {
+        bot.sendMessage(chat_id, "Tắt đèn.", "");
+        digitalWrite(den, HIGH); //OFF relay1
+        }
+    if (text == "/onchuong") {
+      bot.sendMessage(chat_id, "Mở chuông báo.", "");
+      digitalWrite(chuong, LOW); //ON relay2
+      }
+    if (text == "/stopchuong") {
+       digitalWrite(chuong, HIGH);
+       bot.sendMessage(chat_id, "Tắt chuông báo trong 5 phút.", "");
+       alarmEn = 0; //disable alarm
+       } 
+    if (text == "/state") {
+       String state = "Trạng thái hiện tại:\n";
+       if (digitalRead(den)){
+        state += "Đèn tắt. \n";
+        }
+        else{
+          state += "Đèn đang mở. \n";
+          }
+       if (digitalRead(door1)){
+       state += "Két sắt 1 đang mở. \n";
+       }
+       else{
+         state += "Két sắt 1 đang đóng. \n";
+         }
+       if (digitalRead(door2)){
+       state += "Két sắt 2 đang mở. \n";
+       }
+       else{
+         state += "Két sắt 2 đang đóng. \n";
+         }
+       if (digitalRead(chuong)){
+       state += "Chuông báo tắt. \n";
+       }
+       else{
+         state += "Chuông báo đang mở. \n";
+         }
+    bot.sendMessage(chat_id, state, "");
+    }
+  }
+}
+//door - Hàm interrupt
+//IRAM_ATTR void door1change () {
+ // door1state = 1;
+//}
+
+
+void setup() {
+
+    pinMode(door1, INPUT_PULLUP);
+      pinMode(door2, INPUT_PULLUP);
+//  attachInterrupt(digitalPinToInterrupt(door1), door1change, RISING); 
+
+      door1last = digitalRead(door1);
+      door2last = digitalRead(door2);
+  pinMode(buzz, OUTPUT);
+    digitalWrite(buzz, HIGH);
+  pinMode(den, OUTPUT);
+   denstate = HIGH; //tắt đèn
+    digitalWrite(den,denstate);//OFF
+  pinMode(chuong, OUTPUT);
+    if (digitalRead(door1) or digitalRead(door2)){
+       digitalWrite(chuong,LOW);//ON
+    }
+    else {
+      digitalWrite(chuong,HIGH);//OFF
+    }
+
+ Serial.begin(115200);
+ Serial.println();
+
+ client.setTrustAnchors(&cert); 
+//IR remote - setup
+  irrecv.enableIRIn(); 
+//WifiManager
+ WiFiManager wifimanager;
+ wifimanager.autoConnect("PND wifi","09876543");
+  Serial.println();
+  Serial.print("Connected, IP address: ");
+  Serial.println(WiFi.localIP());
+ configTime(0, 0, "pool.ntp.org");      // get UTC time via NTP
+// printLocalTime();
+ bot.sendMessage(CHAT_ID, "Hệ thống két sắt vừa khởi động!", "");  
+ if (digitalRead(chuong) == 0){
+      bot.sendMessage(CHAT_ID, "Cảnh báo két sắt đang mở, Bật chuông báo!", "");  
+    }
+}
+
+void loop() {
+//Telegram - loop
+if (millis() > lastTimeBotRan + botRequestDelay)  {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+
+    while(numNewMessages) {
+      Serial.println("got response");
+      handleNewMessages(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    }
+    lastTimeBotRan = millis();
+  }
+  
+//delay tam dung chuong bao
+if (alarmEn == 0 ) {
+    if (millis() > alarmTime + alarmDelay)  {
+        alarmEn = 1;
+        alarmTime = millis();
+        String statea = "Chuông báo hoạt động lại.\n";
+        if(digitalRead(door1)){
+            digitalWrite(chuong, LOW);
+            statea += "Két sắt 1 mở! Bật chuông báo.\n";}
+        if(digitalRead(door1)){
+            digitalWrite(chuong, LOW);
+            statea += "Két sắt 2 mở! Bật chuông báo.\n";}        
+        bot.sendMessage(CHAT_ID, statea, "");
+  }
+}
+//kiem tra lien tuc trang thai cua
+    if (millis() > doorTime + doorDelay)  {
+        if(door1last != digitalRead(door1)){
+          if(digitalRead(door1)){
+                if (alarmEn){
+                  digitalWrite(chuong, LOW);
+                  bot.sendMessage(CHAT_ID, "Két sắt 1 mở. Bật chuông báo.", "");}
+                else {bot.sendMessage(CHAT_ID, "Két sắt 1 mở. Chuông báo đang tắt.", "");} 
+                }
+          else { bot.sendMessage(CHAT_ID, "Két sắt 1 đóng.", "");}
+          door1last = digitalRead(door1);
+        }
+        if(door2last != digitalRead(door2)){
+          if(digitalRead(door2)){
+                if (alarmEn){
+                  digitalWrite(chuong, LOW);
+                  bot.sendMessage(CHAT_ID, "Két sắt 2 mở. Bật chuông báo.", "");}
+                else { bot.sendMessage(CHAT_ID, "Két sắt 2 mở. Chuông báo đang tắt.", "");} 
+                }
+          else { bot.sendMessage(CHAT_ID, "Két sắt 2 đóng.", "");}
+          door2last = digitalRead(door2);
+        }
+      }
+ //IR remote - loop
+ if (irrecv.decode(&results)){
+  //Serial.println(results.value, HEX);
+  serialPrintUint64(results.value, HEX);
+  Serial.println("");
+      switch(results.value){
+          case 0xD81:
+          Serial.println("OFF");
+          digitalWrite(buzz, LOW);
+          delay(100);
+          digitalWrite(buzz, HIGH);
+          digitalWrite(chuong, HIGH);
+          alarmEn = 0; //disable alarm
+          bot.sendMessage(CHAT_ID, "IR - OFF: Tắt chuông báo trong 5 phút.", "");
+          break;
+          case 0xD90:
+          Serial.println("SPEED");
+          digitalWrite(buzz, LOW);
+          delay(100);
+          digitalWrite(buzz, HIGH);
+          denstate = !denstate;
+          digitalWrite(den, denstate);
+          if (denstate){bot.sendMessage(CHAT_ID, "IR - SPEED: Đèn tắt", "");}
+          else {bot.sendMessage(CHAT_ID, "IR - SPEED: Đèn mở", "");}          
+          break;
+      }
+  irrecv.resume();
+ }
+}
